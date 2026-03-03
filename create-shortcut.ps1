@@ -1,13 +1,13 @@
 # Creates a desktop shortcut for the clock that can be pinned to the taskbar
-$scriptPath = Join-Path $PSScriptRoot "clock.ps1"
+$scriptPath = Join-Path $PSScriptRoot "launch.vbs"
 $shortcutPath = Join-Path $PSScriptRoot "Mini Clock.lnk"
 
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = "powershell.exe"
-$shortcut.Arguments = "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
+$shortcut.TargetPath = "wscript.exe"
+$shortcut.Arguments = "`"$scriptPath`""
 $shortcut.WorkingDirectory = $PSScriptRoot
-$shortcut.IconLocation = "shell32.dll,21"
+$shortcut.IconLocation = "imageres.dll,24"
 $shortcut.Description = "Always-on-top clock"
 $shortcut.Save()
 

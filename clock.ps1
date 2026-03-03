@@ -1,9 +1,29 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class IconHelper {
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr ExtractIcon(IntPtr hInst, string lpszExeFileName, int nIconIndex);
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern int SetCurrentProcessExplicitAppUserModelID(string AppID);
+}
+"@
+
+$iconHandle = [IconHelper]::ExtractIcon([IntPtr]::Zero, "imageres.dll", 24)
+$clockIcon = if ($iconHandle -ne [IntPtr]::Zero) {
+    [System.Drawing.Icon]::FromHandle($iconHandle)
+} else {
+    [System.Drawing.SystemIcons]::Application
+}
+
+[IconHelper]::SetCurrentProcessExplicitAppUserModelID("MiniClock.App") | Out-Null
 
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Clock"
+$form.Text = "Mini Clock"
 $form.TopMost = $true
+$form.Icon = $clockIcon
 $form.Size = New-Object System.Drawing.Size(450, 150)
 $form.MinimumSize = New-Object System.Drawing.Size(150, 70)
 $form.BackColor = [System.Drawing.Color]::Black
