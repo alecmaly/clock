@@ -20,36 +20,158 @@ $clockIcon = if ($iconHandle -ne [IntPtr]::Zero) {
 
 [IconHelper]::SetCurrentProcessExplicitAppUserModelID("MiniClock.App") | Out-Null
 
+# --- State ---
+$script:lastClickTime = $null
+$script:startTime = [DateTime]::Now
+
+# HSL-to-RGB for color cycling (saturation=1, lightness=0.6 for vivid pastels)
+function HslToColor([double]$h, [double]$s, [double]$l) {
+    $c = (1 - [Math]::Abs(2 * $l - 1)) * $s
+    $x = $c * (1 - [Math]::Abs(($h / 60) % 2 - 1))
+    $m = $l - $c / 2
+    if     ($h -lt 60)  { $r=$c; $g=$x; $b=0 }
+    elseif ($h -lt 120) { $r=$x; $g=$c; $b=0 }
+    elseif ($h -lt 180) { $r=0;  $g=$c; $b=$x }
+    elseif ($h -lt 240) { $r=0;  $g=$x; $b=$c }
+    elseif ($h -lt 300) { $r=$x; $g=0;  $b=$c }
+    else                { $r=$c; $g=0;  $b=$x }
+    [System.Drawing.Color]::FromArgb(
+        [int](($r + $m) * 255),
+        [int](($g + $m) * 255),
+        [int](($b + $m) * 255))
+}
+
+# --- Form setup ---
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Mini Clock"
 $form.TopMost = $true
 $form.Icon = $clockIcon
-$form.Size = New-Object System.Drawing.Size(450, 150)
-$form.MinimumSize = New-Object System.Drawing.Size(150, 70)
+$form.Size = New-Object System.Drawing.Size(450, 175)
+$form.MinimumSize = New-Object System.Drawing.Size(200, 100)
 $form.BackColor = [System.Drawing.Color]::Black
 $form.StartPosition = "CenterScreen"
 
+# Main time label
 $label = New-Object System.Windows.Forms.Label
-$label.Dock = "Fill"
 $label.ForeColor = [System.Drawing.Color]::White
 $label.TextAlign = "MiddleCenter"
 $label.Text = (Get-Date -Format "hh:mm:ss tt")
+$label.Cursor = [System.Windows.Forms.Cursors]::Hand
 
-# Auto-scale font to fill the window
+# Lap/stopwatch label (smaller, below the clock)
+$lapLabel = New-Object System.Windows.Forms.Label
+$lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 120)
+$lapLabel.TextAlign = "MiddleCenter"
+$lapLabel.Text = "click to start lap timer"
+$lapLabel.Cursor = [System.Windows.Forms.Cursors]::Hand
+
+# Layout: use a TableLayoutPanel so the clock gets most space, lap line gets the rest
+$table = New-Object System.Windows.Forms.TableLayoutPanel
+$table.Dock = "Fill"
+$table.RowCount = 2
+$table.ColumnCount = 1
+[void]$table.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Percent", 72)))
+[void]$table.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Percent", 28)))
+$label.Dock = "Fill"
+$lapLabel.Dock = "Fill"
+$table.Controls.Add($label, 0, 0)
+$table.Controls.Add($lapLabel, 0, 1)
+$form.Controls.Add($table)
+
+# Auto-scale fonts to fill the window
 $resizeFont = {
     $w = $form.ClientSize.Width
     $h = $form.ClientSize.Height
-    $size = [Math]::Max(8, [Math]::Min($w / 10, $h / 1.8))
-    $label.Font = New-Object System.Drawing.Font("Consolas", $size, [System.Drawing.FontStyle]::Bold)
+    $mainSize = [Math]::Max(8, [Math]::Min($w / 10, $h / 2.5))
+    $lapSize  = [Math]::Max(7, $mainSize * 0.7)
+    $label.Font    = New-Object System.Drawing.Font("Consolas", $mainSize, [System.Drawing.FontStyle]::Bold)
+    $lapLabel.Font = New-Object System.Drawing.Font("Consolas", $lapSize)
 }
 
 $form.Add_Resize($resizeFont)
 $form.Add_Shown($resizeFont)
 
+# --- Click handlers (lap timer) ---
+$onClick = {
+    if ($null -eq $script:lastClickTime) {
+        $script:lastClickTime = [DateTime]::Now
+        $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 120)
+        $lapLabel.Text = "+00:00:00  (timing...)"
+    } else {
+        # Freeze the elapsed time display and reset
+        $elapsed = [DateTime]::Now - $script:lastClickTime
+        $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(255, 200, 60)
+        $lapLabel.Text = "lap: " + $elapsed.ToString("hh\:mm\:ss") + "  (click for new)"
+        $script:lastClickTime = [DateTime]::Now
+    }
+}
+
+$onRightClick = {
+    $script:lastClickTime = $null
+    $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 120)
+    $lapLabel.Text = "click to start lap timer"
+}
+
+$label.Add_Click($onClick)
+$lapLabel.Add_Click($onClick)
+$label.Add_MouseUp({
+    if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Right) { & $onRightClick }
+})
+$lapLabel.Add_MouseUp({
+    if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Right) { & $onRightClick }
+})
+
+# --- Main tick timer (100ms for smooth animations) ---
 $timer = New-Object System.Windows.Forms.Timer
-$timer.Interval = 500
-$timer.Add_Tick({ $label.Text = Get-Date -Format "hh:mm:ss tt" })
+$timer.Interval = 100
+$timer.Add_Tick({
+    $now = Get-Date
+
+    # Color cycling: continuous time-based hue (~8 second full rainbow)
+    $elapsed = ($now - $script:startTime).TotalSeconds
+    $hue = ($elapsed * 45) % 360  # 45 degrees/sec = full cycle in 8s
+    $color = HslToColor $hue 1.0 0.62
+
+    # Gentle pulse: smooth sine-wave brightness boost peaking at second boundary
+    $ms = $now.Millisecond
+    $pulseWindow = 400
+    if ($ms -lt $pulseWindow) {
+        # Sine ease-out: brightest at ms=0, fades to 0 at $pulseWindow
+        $t = $ms / $pulseWindow
+        $blend = 0.25 * [Math]::Cos($t * [Math]::PI / 2)
+        $r = [Math]::Min(255, [int]($color.R + (255 - $color.R) * $blend))
+        $g = [Math]::Min(255, [int]($color.G + (255 - $color.G) * $blend))
+        $b = [Math]::Min(255, [int]($color.B + (255 - $color.B) * $blend))
+        $color = [System.Drawing.Color]::FromArgb($r, $g, $b)
+    }
+
+    $label.ForeColor = $color
+
+    # Smooth colon fade: colons transition from full color to dim using a sine curve
+    $colonPhase = ($ms / 1000.0) * 2 * [Math]::PI  # full cycle per second
+    $colonAlpha = 0.5 + 0.5 * [Math]::Cos($colonPhase)  # 1.0 at 0ms, 0.0 at 500ms
+    $dimR = [int]($color.R * $colonAlpha)
+    $dimG = [int]($color.G * $colonAlpha)
+    $dimB = [int]($color.B * $colonAlpha)
+    $timeStr = $now.ToString("hh mm ss tt")
+    $colonColor = [System.Drawing.Color]::FromArgb($dimR, $dimG, $dimB)
+
+    # WinForms Label can't do per-char color, so we swap colons with spaces
+    # when they fade below a threshold for a softer blink effect
+    $timeStr = $now.ToString("hh:mm:ss tt")
+    if ($colonAlpha -lt 0.35) {
+        $timeStr = $timeStr.Replace(":", " ")
+    }
+    $label.Text = $timeStr
+
+    # Update running lap timer
+    if ($null -ne $script:lastClickTime) {
+        $elapsed = [DateTime]::Now - $script:lastClickTime
+        $wholeSeconds = [TimeSpan]::FromSeconds([Math]::Floor($elapsed.TotalSeconds))
+        $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 120)
+        $lapLabel.Text = "+" + $wholeSeconds.ToString("hh\:mm\:ss") + "  elapsed"
+    }
+})
 $timer.Start()
 
-$form.Controls.Add($label)
 [void]$form.ShowDialog()
