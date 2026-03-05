@@ -83,7 +83,7 @@ $resizeFont = {
     $w = $form.ClientSize.Width
     $h = $form.ClientSize.Height
     $mainSize = [Math]::Max(8, [Math]::Min($w / 10, $h / 2.5))
-    $lapSize  = [Math]::Max(7, $mainSize * 0.7)
+    $lapSize  = [Math]::Max(7, $mainSize * 0.6)
     $label.Font    = New-Object System.Drawing.Font("Consolas", $mainSize, [System.Drawing.FontStyle]::Bold)
     $lapLabel.Font = New-Object System.Drawing.Font("Consolas", $lapSize)
 }
