@@ -47,7 +47,7 @@ $form = New-Object System.Windows.Forms.Form
 $form.Text = "Mini Clock"
 $form.TopMost = $true
 $form.Icon = $clockIcon
-$form.Size = New-Object System.Drawing.Size(450, 175)
+$form.Size = New-Object System.Drawing.Size(450, 210)
 $form.MinimumSize = New-Object System.Drawing.Size(200, 100)
 $form.BackColor = [System.Drawing.Color]::Black
 $form.StartPosition = "CenterScreen"
@@ -66,17 +66,27 @@ $lapLabel.TextAlign = "MiddleCenter"
 $lapLabel.Text = "click to start lap timer"
 $lapLabel.Cursor = [System.Windows.Forms.Cursors]::Hand
 
-# Layout: use a TableLayoutPanel so the clock gets most space, lap line gets the rest
+# Elapsed timer label (right-click triggered, separate from lap)
+$elapsedLabel = New-Object System.Windows.Forms.Label
+$elapsedLabel.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
+$elapsedLabel.TextAlign = "MiddleCenter"
+$elapsedLabel.Text = "right-click to start timer"
+$elapsedLabel.Cursor = [System.Windows.Forms.Cursors]::Hand
+
+# Layout: use a TableLayoutPanel — clock gets most space, lap and elapsed get the rest
 $table = New-Object System.Windows.Forms.TableLayoutPanel
 $table.Dock = "Fill"
-$table.RowCount = 2
+$table.RowCount = 3
 $table.ColumnCount = 1
-[void]$table.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Percent", 72)))
-[void]$table.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Percent", 28)))
+[void]$table.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Percent", 58)))
+[void]$table.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Percent", 21)))
+[void]$table.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Percent", 21)))
 $label.Dock = "Fill"
 $lapLabel.Dock = "Fill"
+$elapsedLabel.Dock = "Fill"
 $table.Controls.Add($label, 0, 0)
 $table.Controls.Add($lapLabel, 0, 1)
+$table.Controls.Add($elapsedLabel, 0, 2)
 $form.Controls.Add($table)
 
 # Auto-scale fonts to fill the window
@@ -84,9 +94,10 @@ $resizeFont = {
     $w = $form.ClientSize.Width
     $h = $form.ClientSize.Height
     $mainSize = [Math]::Max(8, [Math]::Min($w / 10, $h / 2.5))
-    $lapSize  = [Math]::Max(7, $mainSize * 0.6)
-    $label.Font    = New-Object System.Drawing.Font("Consolas", $mainSize, [System.Drawing.FontStyle]::Bold)
-    $lapLabel.Font = New-Object System.Drawing.Font("Consolas", $lapSize)
+    $lapSize  = [Math]::Max(7, $mainSize * 0.5)
+    $label.Font        = New-Object System.Drawing.Font("Consolas", $mainSize, [System.Drawing.FontStyle]::Bold)
+    $lapLabel.Font     = New-Object System.Drawing.Font("Consolas", $lapSize)
+    $elapsedLabel.Font = New-Object System.Drawing.Font("Consolas", $lapSize)
 }
 
 $form.Add_Resize($resizeFont)
@@ -94,7 +105,6 @@ $form.Add_Shown($resizeFont)
 
 # --- Click handlers (lap timer) ---
 $onClick = {
-    $script:rightClickTimer = $null  # cancel elapsed timer if running
     if ($null -eq $script:lastClickTime) {
         $script:lastClickTime = [DateTime]::Now
         $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 120)
@@ -110,16 +120,13 @@ $onClick = {
 
 $onRightClick = {
     if ($null -eq $script:rightClickTimer) {
-        # Start elapsed timer, cancel any lap timer
-        $script:lastClickTime = $null
         $script:rightClickTimer = [DateTime]::Now
-        $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(100, 180, 255)
-        $lapLabel.Text = "00:00  elapsed"
+        $elapsedLabel.ForeColor = [System.Drawing.Color]::FromArgb(100, 180, 255)
+        $elapsedLabel.Text = "00:00  elapsed"
     } else {
-        # Stop elapsed timer
         $script:rightClickTimer = $null
-        $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 120)
-        $lapLabel.Text = "click to start lap timer"
+        $elapsedLabel.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
+        $elapsedLabel.Text = "right-click to start timer"
     }
 }
 
@@ -129,6 +136,9 @@ $label.Add_MouseUp({
     if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Right) { & $onRightClick }
 })
 $lapLabel.Add_MouseUp({
+    if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Right) { & $onRightClick }
+})
+$elapsedLabel.Add_MouseUp({
     if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Right) { & $onRightClick }
 })
 
@@ -175,16 +185,16 @@ $timer.Add_Tick({
     }
     $label.Text = $timeStr
 
-    # Update right-click elapsed timer (takes priority)
+    # Update right-click elapsed timer
     if ($null -ne $script:rightClickTimer) {
         $elapsed = [DateTime]::Now - $script:rightClickTimer
         $mins = [Math]::Floor($elapsed.TotalMinutes)
         $secs = [Math]::Floor($elapsed.TotalSeconds) % 60
-        $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(100, 180, 255)
-        $lapLabel.Text = ("{0:D2}:{1:D2}  elapsed" -f [int]$mins, [int]$secs)
+        $elapsedLabel.ForeColor = [System.Drawing.Color]::FromArgb(100, 180, 255)
+        $elapsedLabel.Text = ("{0:D2}:{1:D2}  elapsed" -f [int]$mins, [int]$secs)
     }
     # Update running lap timer
-    elseif ($null -ne $script:lastClickTime) {
+    if ($null -ne $script:lastClickTime) {
         $elapsed = [DateTime]::Now - $script:lastClickTime
         $wholeSeconds = [TimeSpan]::FromSeconds([Math]::Floor($elapsed.TotalSeconds))
         $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 120)
