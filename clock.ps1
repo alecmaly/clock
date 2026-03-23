@@ -23,6 +23,7 @@ $clockIcon = if ($iconHandle -ne [IntPtr]::Zero) {
 # --- State ---
 $script:lastClickTime = $null
 $script:startTime = [DateTime]::Now
+$script:rightClickTimer = $null  # elapsed timer started by right-click
 
 # HSL-to-RGB for color cycling (saturation=1, lightness=0.6 for vivid pastels)
 function HslToColor([double]$h, [double]$s, [double]$l) {
@@ -93,6 +94,7 @@ $form.Add_Shown($resizeFont)
 
 # --- Click handlers (lap timer) ---
 $onClick = {
+    $script:rightClickTimer = $null  # cancel elapsed timer if running
     if ($null -eq $script:lastClickTime) {
         $script:lastClickTime = [DateTime]::Now
         $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 120)
@@ -107,9 +109,18 @@ $onClick = {
 }
 
 $onRightClick = {
-    $script:lastClickTime = $null
-    $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 120)
-    $lapLabel.Text = "click to start lap timer"
+    if ($null -eq $script:rightClickTimer) {
+        # Start elapsed timer, cancel any lap timer
+        $script:lastClickTime = $null
+        $script:rightClickTimer = [DateTime]::Now
+        $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(100, 180, 255)
+        $lapLabel.Text = "00:00  elapsed"
+    } else {
+        # Stop elapsed timer
+        $script:rightClickTimer = $null
+        $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 120)
+        $lapLabel.Text = "click to start lap timer"
+    }
 }
 
 $label.Add_Click($onClick)
@@ -164,8 +175,16 @@ $timer.Add_Tick({
     }
     $label.Text = $timeStr
 
+    # Update right-click elapsed timer (takes priority)
+    if ($null -ne $script:rightClickTimer) {
+        $elapsed = [DateTime]::Now - $script:rightClickTimer
+        $mins = [Math]::Floor($elapsed.TotalMinutes)
+        $secs = [Math]::Floor($elapsed.TotalSeconds) % 60
+        $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(100, 180, 255)
+        $lapLabel.Text = ("{0:D2}:{1:D2}  elapsed" -f [int]$mins, [int]$secs)
+    }
     # Update running lap timer
-    if ($null -ne $script:lastClickTime) {
+    elseif ($null -ne $script:lastClickTime) {
         $elapsed = [DateTime]::Now - $script:lastClickTime
         $wholeSeconds = [TimeSpan]::FromSeconds([Math]::Floor($elapsed.TotalSeconds))
         $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 120)
