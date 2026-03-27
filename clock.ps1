@@ -24,6 +24,64 @@ $clockIcon = if ($iconHandle -ne [IntPtr]::Zero) {
 $script:lastClickTime = $null
 $script:startTime = [DateTime]::Now
 $script:rightClickTimer = $null  # elapsed timer started by right-click
+$script:alarmSeconds = 180        # default alarm threshold (3 minutes)
+$script:alarmFired = $false       # has alarm fired for current break?
+$script:alarmFlashOn = $false     # flash toggle state
+
+# --- Alarm sound: synthesized ascending chime ---
+function PlayAlarmSound {
+    $sampleRate = 22050
+    # Ascending major arpeggio: C5 E5 G5 C6, with a richer final note
+    $notes = @(
+        @{Freq=523.25; Dur=0.13},
+        @{Freq=659.25; Dur=0.13},
+        @{Freq=783.99; Dur=0.13},
+        @{Freq=1046.50; Dur=0.30}
+    )
+
+    $pcmMs = New-Object System.IO.MemoryStream
+    $pcmBw = New-Object System.IO.BinaryWriter($pcmMs)
+
+    foreach ($note in $notes) {
+        $numSamples = [int]($sampleRate * $note.Dur)
+        for ($i = 0; $i -lt $numSamples; $i++) {
+            $t = $i / $sampleRate
+            $env = [Math]::Sin($i / $numSamples * [Math]::PI)
+            # Fundamental + soft 2nd harmonic + touch of 3rd for warmth
+            $v  = [Math]::Sin(2 * [Math]::PI * $note.Freq * $t) * 0.65
+            $v += [Math]::Sin(2 * [Math]::PI * $note.Freq * 2 * $t) * 0.20
+            $v += [Math]::Sin(2 * [Math]::PI * $note.Freq * 3 * $t) * 0.08
+            $pcmBw.Write([int16]($v * $env * 14000))
+        }
+        # Tiny gap between notes
+        for ($i = 0; $i -lt [int]($sampleRate * 0.03); $i++) { $pcmBw.Write([int16]0) }
+    }
+    $pcmBw.Flush()
+    $pcmData = $pcmMs.ToArray()
+
+    $ms = New-Object System.IO.MemoryStream
+    $bw = New-Object System.IO.BinaryWriter($ms)
+    $dataSize = $pcmData.Length
+    $bw.Write([System.Text.Encoding]::ASCII.GetBytes("RIFF"))
+    $bw.Write([int32]($dataSize + 36))
+    $bw.Write([System.Text.Encoding]::ASCII.GetBytes("WAVE"))
+    $bw.Write([System.Text.Encoding]::ASCII.GetBytes("fmt "))
+    $bw.Write([int32]16)
+    $bw.Write([int16]1)
+    $bw.Write([int16]1)
+    $bw.Write([int32]$sampleRate)
+    $bw.Write([int32]($sampleRate * 2))
+    $bw.Write([int16]2)
+    $bw.Write([int16]16)
+    $bw.Write([System.Text.Encoding]::ASCII.GetBytes("data"))
+    $bw.Write([int32]$dataSize)
+    $bw.Write($pcmData)
+    $bw.Flush()
+    $ms.Position = 0
+
+    $player = New-Object System.Media.SoundPlayer($ms)
+    $player.Play()
+}
 
 # HSL-to-RGB for color cycling (saturation=1, lightness=0.6 for vivid pastels)
 function HslToColor([double]$h, [double]$s, [double]$l) {
@@ -73,20 +131,92 @@ $elapsedLabel.TextAlign = "MiddleCenter"
 $elapsedLabel.Text = "right-click to start timer"
 $elapsedLabel.Cursor = [System.Windows.Forms.Cursors]::Hand
 
-# Layout: use a TableLayoutPanel — clock gets most space, lap and elapsed get the rest
+# Alarm controls panel
+$alarmPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+$alarmPanel.Dock = "Fill"
+$alarmPanel.BackColor = [System.Drawing.Color]::Black
+$alarmPanel.Anchor = "None"
+$alarmPanel.AutoSize = $false
+$alarmPanel.WrapContents = $false
+$alarmPanel.FlowDirection = "LeftToRight"
+$alarmPanel.Padding = New-Object System.Windows.Forms.Padding(0)
+
+$alarmLabel = New-Object System.Windows.Forms.Label
+$alarmLabel.ForeColor = [System.Drawing.Color]::FromArgb(140, 140, 140)
+$alarmLabel.Text = "alarm: 3:00"
+$alarmLabel.TextAlign = "MiddleCenter"
+$alarmLabel.AutoSize = $true
+$alarmLabel.Margin = New-Object System.Windows.Forms.Padding(4, 2, 2, 0)
+
+$btnMinus = New-Object System.Windows.Forms.Button
+$btnMinus.Text = "-"
+$btnMinus.FlatStyle = "Flat"
+$btnMinus.ForeColor = [System.Drawing.Color]::FromArgb(180, 180, 180)
+$btnMinus.BackColor = [System.Drawing.Color]::FromArgb(40, 40, 40)
+$btnMinus.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
+$btnMinus.Size = New-Object System.Drawing.Size(28, 22)
+$btnMinus.Margin = New-Object System.Windows.Forms.Padding(2, 2, 0, 0)
+$btnMinus.Cursor = [System.Windows.Forms.Cursors]::Hand
+$btnMinus.Add_Click({
+    if ($script:alarmSeconds -gt 30) {
+        $script:alarmSeconds -= 30
+        $script:alarmFired = $false
+        $m = [Math]::Floor($script:alarmSeconds / 60)
+        $s = $script:alarmSeconds % 60
+        $alarmLabel.Text = "alarm: {0}:{1:D2}" -f $m, $s
+    }
+})
+
+$btnPlus = New-Object System.Windows.Forms.Button
+$btnPlus.Text = "+"
+$btnPlus.FlatStyle = "Flat"
+$btnPlus.ForeColor = [System.Drawing.Color]::FromArgb(180, 180, 180)
+$btnPlus.BackColor = [System.Drawing.Color]::FromArgb(40, 40, 40)
+$btnPlus.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
+$btnPlus.Size = New-Object System.Drawing.Size(28, 22)
+$btnPlus.Margin = New-Object System.Windows.Forms.Padding(2, 2, 0, 0)
+$btnPlus.Cursor = [System.Windows.Forms.Cursors]::Hand
+$btnPlus.Add_Click({
+    $script:alarmSeconds += 30
+    $script:alarmFired = $false
+    $m = [Math]::Floor($script:alarmSeconds / 60)
+    $s = $script:alarmSeconds % 60
+    $alarmLabel.Text = "alarm: {0}:{1:D2}" -f $m, $s
+})
+
+$btnTest = New-Object System.Windows.Forms.Button
+$btnTest.Text = "Test"
+$btnTest.FlatStyle = "Flat"
+$btnTest.ForeColor = [System.Drawing.Color]::FromArgb(255, 200, 100)
+$btnTest.BackColor = [System.Drawing.Color]::FromArgb(40, 40, 40)
+$btnTest.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(100, 80, 40)
+$btnTest.Size = New-Object System.Drawing.Size(44, 22)
+$btnTest.Margin = New-Object System.Windows.Forms.Padding(8, 2, 0, 0)
+$btnTest.Cursor = [System.Windows.Forms.Cursors]::Hand
+$btnTest.Add_Click({ PlayAlarmSound })
+
+$alarmPanel.Controls.Add($alarmLabel)
+$alarmPanel.Controls.Add($btnMinus)
+$alarmPanel.Controls.Add($btnPlus)
+$alarmPanel.Controls.Add($btnTest)
+
+# Layout: use a TableLayoutPanel — clock gets most space, lap, elapsed, and alarm get the rest
 $table = New-Object System.Windows.Forms.TableLayoutPanel
 $table.Dock = "Fill"
-$table.RowCount = 3
+$table.RowCount = 4
 $table.ColumnCount = 1
-[void]$table.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Percent", 58)))
-[void]$table.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Percent", 21)))
-[void]$table.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Percent", 21)))
+[void]$table.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Percent", 50)))
+[void]$table.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Percent", 18)))
+[void]$table.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Percent", 18)))
+[void]$table.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Percent", 14)))
 $label.Dock = "Fill"
 $lapLabel.Dock = "Fill"
 $elapsedLabel.Dock = "Fill"
+$alarmPanel.Dock = "Fill"
 $table.Controls.Add($label, 0, 0)
 $table.Controls.Add($lapLabel, 0, 1)
 $table.Controls.Add($elapsedLabel, 0, 2)
+$table.Controls.Add($alarmPanel, 0, 3)
 $form.Controls.Add($table)
 
 # Auto-scale fonts to fill the window
@@ -95,9 +225,14 @@ $resizeFont = {
     $h = $form.ClientSize.Height
     $mainSize = [Math]::Max(8, [Math]::Min($w / 10, $h / 2.5))
     $lapSize  = [Math]::Max(7, $mainSize * 0.5)
+    $alarmSize = [Math]::Max(7, $mainSize * 0.35)
     $label.Font        = New-Object System.Drawing.Font("Consolas", $mainSize, [System.Drawing.FontStyle]::Bold)
     $lapLabel.Font     = New-Object System.Drawing.Font("Consolas", $lapSize)
     $elapsedLabel.Font = New-Object System.Drawing.Font("Consolas", $lapSize)
+    $alarmLabel.Font   = New-Object System.Drawing.Font("Consolas", $alarmSize)
+    $btnMinus.Font     = New-Object System.Drawing.Font("Consolas", $alarmSize, [System.Drawing.FontStyle]::Bold)
+    $btnPlus.Font      = New-Object System.Drawing.Font("Consolas", $alarmSize, [System.Drawing.FontStyle]::Bold)
+    $btnTest.Font      = New-Object System.Drawing.Font("Consolas", [Math]::Max(7, $alarmSize * 0.9))
 }
 
 $form.Add_Resize($resizeFont)
@@ -107,6 +242,7 @@ $form.Add_Shown($resizeFont)
 $onClick = {
     if ($null -eq $script:lastClickTime) {
         $script:lastClickTime = [DateTime]::Now
+        $script:alarmFired = $false
         $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 120)
         $lapLabel.Text = "+00:00:00  (timing...)"
     } else {
@@ -115,6 +251,7 @@ $onClick = {
         $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(255, 200, 60)
         $lapLabel.Text = "lap: " + $elapsed.ToString("hh\:mm\:ss") + "  (click for new)"
         $script:lastClickTime = [DateTime]::Now
+        $script:alarmFired = $false
     }
 }
 
@@ -130,13 +267,13 @@ $onRightClick = {
     }
 }
 
-$label.Add_Click($onClick)
-$lapLabel.Add_Click($onClick)
 $label.Add_MouseUp({
-    if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Right) { & $onRightClick }
+    if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) { & $onClick }
+    elseif ($_.Button -eq [System.Windows.Forms.MouseButtons]::Right) { & $onRightClick }
 })
 $lapLabel.Add_MouseUp({
-    if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Right) { & $onRightClick }
+    if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) { & $onClick }
+    elseif ($_.Button -eq [System.Windows.Forms.MouseButtons]::Right) { & $onRightClick }
 })
 $elapsedLabel.Add_MouseUp({
     if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Right) { & $onRightClick }
@@ -185,20 +322,37 @@ $timer.Add_Tick({
     }
     $label.Text = $timeStr
 
-    # Update right-click elapsed timer
+    # Update right-click total exercise timer (no alarm)
     if ($null -ne $script:rightClickTimer) {
-        $elapsed = [DateTime]::Now - $script:rightClickTimer
-        $mins = [Math]::Floor($elapsed.TotalMinutes)
-        $secs = [Math]::Floor($elapsed.TotalSeconds) % 60
+        $totalElapsed = [DateTime]::Now - $script:rightClickTimer
+        $mins = [Math]::Floor($totalElapsed.TotalMinutes)
+        $secs = [Math]::Floor($totalElapsed.TotalSeconds) % 60
         $elapsedLabel.ForeColor = [System.Drawing.Color]::FromArgb(100, 180, 255)
         $elapsedLabel.Text = ("{0:D2}:{1:D2}  elapsed" -f [int]$mins, [int]$secs)
     }
-    # Update running lap timer
+    # Update running lap/break timer + alarm check
     if ($null -ne $script:lastClickTime) {
-        $elapsed = [DateTime]::Now - $script:lastClickTime
-        $wholeSeconds = [TimeSpan]::FromSeconds([Math]::Floor($elapsed.TotalSeconds))
-        $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 120)
-        $lapLabel.Text = "+" + $wholeSeconds.ToString("hh\:mm\:ss") + "  elapsed"
+        $breakElapsed = [DateTime]::Now - $script:lastClickTime
+        $wholeSeconds = [TimeSpan]::FromSeconds([Math]::Floor($breakElapsed.TotalSeconds))
+        $overAlarm = $breakElapsed.TotalSeconds -ge $script:alarmSeconds
+
+        if ($overAlarm -and -not $script:alarmFired) {
+            $script:alarmFired = $true
+            PlayAlarmSound
+        }
+
+        if ($overAlarm) {
+            $script:alarmFlashOn = -not $script:alarmFlashOn
+            if ($script:alarmFlashOn) {
+                $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(255, 60, 60)
+            } else {
+                $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(255, 140, 40)
+            }
+            $lapLabel.Text = "+" + $wholeSeconds.ToString("hh\:mm\:ss") + "  BREAK OVER!"
+        } else {
+            $lapLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 120)
+            $lapLabel.Text = "+" + $wholeSeconds.ToString("hh\:mm\:ss") + "  elapsed"
+        }
     }
 })
 $timer.Start()
