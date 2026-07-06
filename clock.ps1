@@ -24,7 +24,7 @@ $clockIcon = if ($iconHandle -ne [IntPtr]::Zero) {
 $script:lastClickTime = $null
 $script:startTime = [DateTime]::Now
 $script:rightClickTimer = $null  # elapsed timer started by right-click
-$script:alarmSeconds = 180        # default alarm threshold (3 minutes)
+$script:alarmSeconds = 120        # default alarm threshold (2 minutes)
 $script:alarmFired = $false       # has alarm fired for current break?
 $script:alarmFlashOn = $false     # flash toggle state
 
