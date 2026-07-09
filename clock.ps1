@@ -143,7 +143,9 @@ $alarmPanel.Padding = New-Object System.Windows.Forms.Padding(0)
 
 $alarmLabel = New-Object System.Windows.Forms.Label
 $alarmLabel.ForeColor = [System.Drawing.Color]::FromArgb(140, 140, 140)
-$alarmLabel.Text = "alarm: 3:00"
+$initialAlarmMins = [Math]::Floor($script:alarmSeconds / 60)
+$initialAlarmSecs = $script:alarmSeconds % 60
+$alarmLabel.Text = "alarm: {0}:{1:D2}" -f $initialAlarmMins, $initialAlarmSecs
 $alarmLabel.TextAlign = "MiddleCenter"
 $alarmLabel.AutoSize = $true
 $alarmLabel.Margin = New-Object System.Windows.Forms.Padding(4, 2, 2, 0)
